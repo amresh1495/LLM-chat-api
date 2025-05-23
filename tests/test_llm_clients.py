@@ -87,7 +87,13 @@ class TestGemmaClient(unittest.TestCase):
         ]
         mock_pipe_instance.assert_called_once()
         args, kwargs = mock_pipe_instance.call_args
-        self.assertEqual(kwargs.get('text'), expected_messages_arg)
+        # Ensure the 'text' argument to the pipeline matches the expected messages
+        # The 'text' key contains the list of message dictionaries
+        self.assertEqual(len(kwargs.get('text')), 2) # System and User message
+        self.assertEqual(kwargs.get('text')[0]['role'], "system")
+        self.assertEqual(kwargs.get('text')[1]['role'], "user")
+        self.assertEqual(kwargs.get('text')[1]['content'][0]['text'], "Hello Gemma")
+
         self.assertEqual(kwargs.get('max_new_tokens'), 500)
         print("TestGemmaClient: test_gemma_generate_response_no_history PASSED")
 
@@ -103,7 +109,7 @@ class TestGemmaClient(unittest.TestCase):
                 {"role": "system", "content": [{"type": "text", "text": "You are a helpful AI assistant."}]},
                 {"role": "user", "content": [{"type": "text", "text": "Past question?"}]},
                 {"role": "assistant", "content": [{"type": "text", "text": "Past answer."}]},
-                {"role": "user", "content": [{"type": "text", "text": "New question?"}]},
+                {"role": "user", "content": [{"type": "text", "text": "New question?"}]}, # This is the final user prompt text
                 {"role": "assistant", "content": [{"type": "text", "text": "New answer!"}]}
             ]
         }]
@@ -130,6 +136,38 @@ class TestGemmaClient(unittest.TestCase):
         args, kwargs = mock_pipe_instance.call_args
         self.assertEqual(kwargs.get('text'), expected_messages_arg)
         print("TestGemmaClient: test_gemma_generate_response_with_history PASSED")
+
+    @patch('llm_integrations.gemma_client.pipeline')
+    def test_gemma_generate_response_with_rag_context(self, mock_pipeline):
+        """Test GemmaClient generate_response with RAG context."""
+        if GemmaClient is None: self.skipTest("GemmaClient not imported.")
+
+        mock_pipe_instance = MagicMock()
+        mock_gemma_output = [{
+             "generated_text": [
+                {"role": "system", "content": [{"type": "text", "text": "You are a helpful AI assistant."}]},
+                {"role": "user", "content": [{"type": "text", "text": "Based on the following context:\nTest RAG Context\n\nUser query: Hello from RAG"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "RAG Response"}]}
+            ]
+        }]
+        mock_pipe_instance.return_value = mock_gemma_output
+        mock_pipeline.return_value = mock_pipe_instance
+
+        client = GemmaClient(model_id="test-gemma-model")
+        response = client.generate_response("Hello from RAG", retrieved_context="Test RAG Context")
+        self.assertEqual(response, "RAG Response")
+
+        expected_user_prompt_with_context = "Based on the following context:\nTest RAG Context\n\nUser query: Hello from RAG"
+        expected_messages_arg = [
+            {"role": "system", "content": [{"type": "text", "text": "You are a helpful AI assistant."}]},
+            {"role": "user", "content": [{"type": "text", "text": expected_user_prompt_with_context}]}
+        ]
+        
+        mock_pipe_instance.assert_called_once()
+        args, kwargs = mock_pipe_instance.call_args
+        self.assertEqual(kwargs.get('text'), expected_messages_arg)
+        print("TestGemmaClient: test_gemma_generate_response_with_rag_context PASSED")
+
 
     @patch('llm_integrations.gemma_client.pipeline')
     def test_gemma_generate_response_pipeline_error(self, mock_pipeline):
@@ -220,7 +258,12 @@ class TestLlamaClient(unittest.TestCase):
         # The pipeline is called with (messages, max_new_tokens=..., do_sample=..., ...)
         mock_pipe_instance.assert_called_once()
         args, kwargs = mock_pipe_instance.call_args
-        self.assertEqual(args[0], expected_messages_arg) # Messages is the first positional arg
+        # args[0] should be the list of messages
+        self.assertEqual(len(args[0]), 2) # System and User message
+        self.assertEqual(args[0][0]['role'], "system")
+        self.assertEqual(args[0][1]['role'], "user")
+        self.assertEqual(args[0][1]['content'], "Hello Llama")
+        
         self.assertEqual(kwargs.get('max_new_tokens'), 500)
         print("TestLlamaClient: test_llama_generate_response_no_history PASSED")
 
@@ -235,7 +278,7 @@ class TestLlamaClient(unittest.TestCase):
                 {"role": "system", "content": "You are a helpful AI assistant."},
                 {"role": "user", "content": "Old Llama question?"},
                 {"role": "assistant", "content": "Old Llama answer."},
-                {"role": "user", "content": "New Llama question?"},
+                {"role": "user", "content": "New Llama question?"}, # This is the final user prompt text
                 {"role": "assistant", "content": "New Llama answer!"}
             ]
         }]
@@ -260,6 +303,37 @@ class TestLlamaClient(unittest.TestCase):
         args, kwargs = mock_pipe_instance.call_args
         self.assertEqual(args[0], expected_messages_arg)
         print("TestLlamaClient: test_llama_generate_response_with_history PASSED")
+
+    @patch('llm_integrations.llama_client.pipeline')
+    def test_llama_generate_response_with_rag_context(self, mock_pipeline):
+        """Test LlamaClient generate_response with RAG context."""
+        if LlamaClient is None: self.skipTest("LlamaClient not imported.")
+
+        mock_pipe_instance = MagicMock()
+        mock_llama_output = [{
+            "generated_text": [
+                {"role": "system", "content": "You are a helpful AI assistant."},
+                {"role": "user", "content": "Based on the following context:\nTest Llama RAG Context\n\nUser query: Hello Llama from RAG"},
+                {"role": "assistant", "content": "Llama RAG Response"}
+            ]
+        }]
+        mock_pipe_instance.return_value = mock_llama_output
+        mock_pipeline.return_value = mock_pipe_instance
+
+        client = LlamaClient(model_id="test-llama-model")
+        response = client.generate_response("Hello Llama from RAG", retrieved_context="Test Llama RAG Context")
+        self.assertEqual(response, "Llama RAG Response")
+
+        expected_user_prompt_with_context = "Based on the following context:\nTest Llama RAG Context\n\nUser query: Hello Llama from RAG"
+        expected_messages_arg = [
+            {"role": "system", "content": "You are a helpful AI assistant."},
+            {"role": "user", "content": expected_user_prompt_with_context}
+        ]
+        
+        mock_pipe_instance.assert_called_once()
+        args, kwargs = mock_pipe_instance.call_args
+        self.assertEqual(args[0], expected_messages_arg)
+        print("TestLlamaClient: test_llama_generate_response_with_rag_context PASSED")
 
     @patch('llm_integrations.llama_client.pipeline')
     def test_llama_generate_response_pipeline_error(self, mock_pipeline):

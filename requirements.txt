@@ -2,3 +2,5 @@ transformers
 torch
 accelerate
 gradio
+sentence-transformers
+faiss-cpu

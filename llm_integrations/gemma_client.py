@@ -33,9 +33,9 @@ class GemmaClient:
             print(f"Error initializing Gemma model '{self.model_id}': {e}")
             raise RuntimeError(f"Failed to load Gemma model '{self.model_id}': {e}")
 
-    def generate_response(self, user_prompt: str, chat_history: list = None) -> str:
+    def generate_response(self, user_prompt: str, chat_history: list = None, retrieved_context: str = None) -> str:
         """
-        Generates a response from the Gemma model based on the user prompt and chat history.
+        Generates a response from the Gemma model based on the user prompt, chat history, and optional retrieved context.
 
         Args:
             user_prompt (str): The user's input prompt.
@@ -44,6 +44,8 @@ class GemmaClient:
                                            and "content" (the message text, which should be a list
                                            of content blocks, e.g., [{"type": "text", "text": "..."}]).
                                            Defaults to None.
+            retrieved_context (str, optional): Context retrieved from RAG to prepend to the user prompt.
+                                               Defaults to None.
 
         Returns:
             str: The generated text response from the model.
@@ -68,8 +70,15 @@ class GemmaClient:
                 raise ValueError(f"Chat history message content is not a string or list: {message_entry['content']}")
 
 
-        # Add current user prompt
-        messages.append({"role": "user", "content": [{"type": "text", "text": user_prompt}]})
+        # Prepare the final user prompt with context if available
+        final_user_prompt_text = user_prompt
+        if retrieved_context and retrieved_context.strip():
+            final_user_prompt_text = f"Based on the following context:\n{retrieved_context}\n\nUser query: {user_prompt}"
+            print(f"GemmaClient: Using RAG context. Final prompt starts with: '{final_user_prompt_text[:200]}...'")
+
+
+        # Add current user prompt (potentially with RAG context)
+        messages.append({"role": "user", "content": [{"type": "text", "text": final_user_prompt_text}]})
 
         try:
             # Generate response using the pipeline
@@ -189,6 +198,15 @@ if __name__ == '__main__':
         print(f"\nUser Prompt: {prompt_2}")
         response_2 = client.generate_response(prompt_2)
         print(f"\nGemma's Response: {response_2}")
+
+        print("\nSending prompt with RAG context (no history)...")
+        prompt_3 = "What is a fox based on this?"
+        rag_context_example = "The fox is a small, carnivorous mammal belonging to the Canidae family. Foxes are typically characterized by their pointed snouts, bushy tails (often called brushes), and reddish-brown fur, though some species may have different coloration."
+        print(f"\nUser Prompt: {prompt_3}")
+        print(f"RAG Context: {rag_context_example}")
+        response_3 = client.generate_response(prompt_3, retrieved_context=rag_context_example)
+        print(f"\nGemma's Response (with RAG): {response_3}")
+
 
     except RuntimeError as e:
         print(f"Runtime Error during example usage: {e}")

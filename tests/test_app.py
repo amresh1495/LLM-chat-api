@@ -13,16 +13,23 @@ try:
         convert_gradio_history_to_llm_format,
         chat_function,
         clear_chat_and_unload_models,
+        initialize_rag_processor, # New import
+        build_rag_index_action,   # New import
         GEMMA_MODEL_NAME,
-        LLAMA_MODEL_NAME
+        LLAMA_MODEL_NAME,
+        DATA_DIR,                 # New import
+        INDEX_PATH                # New import
     )
     # Also need to patch the global client variables within the 'app' module
 except ImportError as e:
     print(f"Failed to import from app: {e}. Ensure app.py is in PYTHONPATH.")
     # Define placeholders if import fails, so tests can be discovered (though they will fail)
     load_model = convert_gradio_history_to_llm_format = chat_function = clear_chat_and_unload_models = None
-    GEMMA_MODEL_NAME = "Gemma 3 (12B IT)" # Default if not imported
-    LLAMA_MODEL_NAME = "Llama 3.2 (3B Instruct)" # Default if not imported
+    initialize_rag_processor = build_rag_index_action = None
+    GEMMA_MODEL_NAME = "Gemma 3 (12B IT)" 
+    LLAMA_MODEL_NAME = "Llama 3.2 (3B Instruct)" 
+    DATA_DIR = "data"
+    INDEX_PATH = "data/faiss_index.idx"
 
 
 # To access and modify the global variables gemma_client and llama_client in app.py,
@@ -43,6 +50,7 @@ class TestAppLogic(unittest.TestCase):
         if app:
             app.gemma_client = None
             app.llama_client = None
+            app.rag_processor = None # Reset RAG processor
         # If torch or gc were globally imported in app.py and need reset, handle here.
         # For this test, we primarily mock their usage within functions.
 
@@ -53,6 +61,7 @@ class TestAppLogic(unittest.TestCase):
         if app:
             app.gemma_client = None
             app.llama_client = None
+            app.rag_processor = None # Reset RAG processor
     
     @patch('app.gc.collect')
     @patch('app.torch.cuda.empty_cache')
@@ -191,55 +200,113 @@ class TestAppLogic(unittest.TestCase):
     def test_chat_function_gemma_not_loaded(self, mock_convert_history):
         if not all([chat_function, app]): self.skipTest("App module or function not imported.")
         app.gemma_client = None
-        response = chat_function("Hello", [], GEMMA_MODEL_NAME)
+        response = chat_function("Hello", [], GEMMA_MODEL_NAME, rag_enabled=False) # Added rag_enabled
         self.assertEqual(response, f"ERROR: {GEMMA_MODEL_NAME} is not loaded. Please load it first.")
-        mock_convert_history.assert_called_once() # Still converts history first
+        mock_convert_history.assert_called_once() 
         print("TestAppLogic: test_chat_function_gemma_not_loaded PASSED")
 
     @patch('app.convert_gradio_history_to_llm_format')
-    @patch('app.GemmaClient') # To control the gemma_client instance in app module
-    def test_chat_function_gemma_success(self, MockGemmaClient, mock_convert_history):
+    @patch('app.GemmaClient') 
+    def test_chat_function_gemma_success_rag_disabled(self, MockGemmaClient, mock_convert_history):
         if not all([chat_function, app]): self.skipTest("App module or function not imported.")
 
-        # Setup mocked Gemma client instance
         mock_gemma_instance = MockGemmaClient.return_value
         mock_gemma_instance.generate_response.return_value = "Gemma response"
-        app.gemma_client = mock_gemma_instance # Assign to app's global
+        app.gemma_client = mock_gemma_instance 
         
         mock_converted_history = [{"role": "user", "content": "Previous message"}]
         mock_convert_history.return_value = mock_converted_history
 
-        response = chat_function("Test message", [["Previous message", "Bot previous"]], GEMMA_MODEL_NAME)
+        response = chat_function("Test message", [["Previous message", "Bot previous"]], GEMMA_MODEL_NAME, rag_enabled=False)
         
         self.assertEqual(response, "Gemma response")
         mock_convert_history.assert_called_once_with([["Previous message", "Bot previous"]])
         mock_gemma_instance.generate_response.assert_called_once_with(
             user_prompt="Test message",
-            chat_history=mock_converted_history
+            chat_history=mock_converted_history,
+            retrieved_context=None # RAG disabled
         )
-        print("TestAppLogic: test_chat_function_gemma_success PASSED")
+        print("TestAppLogic: test_chat_function_gemma_success_rag_disabled PASSED")
 
     @patch('app.convert_gradio_history_to_llm_format')
-    @patch('app.LlamaClient') # To control the llama_client instance in app module
-    def test_chat_function_llama_success(self, MockLlamaClient, mock_convert_history):
+    @patch('app.LlamaClient') 
+    def test_chat_function_llama_success_rag_disabled(self, MockLlamaClient, mock_convert_history):
         if not all([chat_function, app]): self.skipTest("App module or function not imported.")
 
         mock_llama_instance = MockLlamaClient.return_value
         mock_llama_instance.generate_response.return_value = "Llama response"
-        app.llama_client = mock_llama_instance # Assign to app's global
+        app.llama_client = mock_llama_instance 
 
         mock_converted_history = [{"role": "user", "content": "Old message"}]
         mock_convert_history.return_value = mock_converted_history
 
-        response = chat_function("New Llama message", [["Old message", "Old Llama bot"]], LLAMA_MODEL_NAME)
+        response = chat_function("New Llama message", [["Old message", "Old Llama bot"]], LLAMA_MODEL_NAME, rag_enabled=False)
 
         self.assertEqual(response, "Llama response")
         mock_convert_history.assert_called_once_with([["Old message", "Old Llama bot"]])
         mock_llama_instance.generate_response.assert_called_once_with(
             user_prompt="New Llama message",
-            chat_history=mock_converted_history
+            chat_history=mock_converted_history,
+            retrieved_context=None # RAG disabled
         )
-        print("TestAppLogic: test_chat_function_llama_success PASSED")
+        print("TestAppLogic: test_chat_function_llama_success_rag_disabled PASSED")
+
+    @patch('app.RAGProcessor') # Mock RAGProcessor at the app level
+    @patch('app.convert_gradio_history_to_llm_format')
+    @patch('app.GemmaClient')
+    def test_chat_function_gemma_rag_enabled_index_ready(self, MockGemmaClient, mock_convert_history, MockRAGProcessor):
+        if not all([chat_function, app]): self.skipTest("App module or function not imported.")
+
+        # Setup LLM client
+        mock_gemma_instance = MockGemmaClient.return_value
+        mock_gemma_instance.generate_response.return_value = "Gemma RAG response"
+        app.gemma_client = mock_gemma_instance
+
+        # Setup RAG processor
+        mock_rag_instance = MockRAGProcessor.return_value
+        mock_rag_instance.index = MagicMock() # Simulate index exists
+        mock_rag_instance.document_chunks = ["chunk1"] # Simulate chunks exist
+        mock_rag_instance.retrieve_context.return_value = "Retrieved RAG context"
+        app.rag_processor = mock_rag_instance # Assign to app's global
+
+        mock_convert_history.return_value = []
+        response = chat_function("Query for RAG", [], GEMMA_MODEL_NAME, rag_enabled=True)
+
+        self.assertEqual(response, "Gemma RAG response")
+        mock_rag_instance.retrieve_context.assert_called_once_with(query="Query for RAG")
+        mock_gemma_instance.generate_response.assert_called_once_with(
+            user_prompt="Query for RAG",
+            chat_history=[],
+            retrieved_context="Retrieved RAG context"
+        )
+        print("TestAppLogic: test_chat_function_gemma_rag_enabled_index_ready PASSED")
+
+    @patch('app.RAGProcessor')
+    @patch('app.convert_gradio_history_to_llm_format')
+    @patch('app.GemmaClient')
+    def test_chat_function_gemma_rag_enabled_index_not_ready(self, MockGemmaClient, mock_convert_history, MockRAGProcessor):
+        if not all([chat_function, app]): self.skipTest("App module or function not imported.")
+        
+        mock_gemma_instance = MockGemmaClient.return_value
+        mock_gemma_instance.generate_response.return_value = "Gemma no RAG response"
+        app.gemma_client = mock_gemma_instance
+
+        # RAG processor initialized, but index is None (not ready)
+        mock_rag_instance = MockRAGProcessor.return_value
+        mock_rag_instance.index = None 
+        app.rag_processor = mock_rag_instance
+
+        mock_convert_history.return_value = []
+        response = chat_function("Query for RAG", [], GEMMA_MODEL_NAME, rag_enabled=True)
+
+        self.assertEqual(response, "Gemma no RAG response")
+        mock_rag_instance.retrieve_context.assert_not_called() # Should not be called if index is None
+        mock_gemma_instance.generate_response.assert_called_once_with(
+            user_prompt="Query for RAG",
+            chat_history=[],
+            retrieved_context=None # No context as RAG index was not ready
+        )
+        print("TestAppLogic: test_chat_function_gemma_rag_enabled_index_not_ready PASSED")
         
     @patch('app.convert_gradio_history_to_llm_format')
     @patch('app.GemmaClient')

@@ -32,15 +32,17 @@ class LlamaClient:
             # It's good practice to provide the original exception for better debugging.
             raise RuntimeError(f"Failed to load Llama model '{self.model_id}': {e}")
 
-    def generate_response(self, user_prompt: str, chat_history: list = None) -> str:
+    def generate_response(self, user_prompt: str, chat_history: list = None, retrieved_context: str = None) -> str:
         """
-        Generates a response from the Llama model based on the user prompt and chat history.
+        Generates a response from the Llama model based on the user prompt, chat history, and optional retrieved context.
 
         Args:
             user_prompt (str): The user's input prompt.
             chat_history (list, optional): A list of dictionaries representing the conversation history.
                                            Each dictionary should have "role" ("user" or "assistant")
                                            and "content" (the message text). Defaults to None.
+            retrieved_context (str, optional): Context retrieved from RAG to prepend to the user prompt.
+                                               Defaults to None.
 
         Returns:
             str: The generated text response from the model.
@@ -58,7 +60,13 @@ class LlamaClient:
         for message_entry in chat_history:
             messages.append({"role": message_entry["role"], "content": message_entry["content"]})
 
-        messages.append({"role": "user", "content": user_prompt})
+        # Prepare the final user prompt with context if available
+        final_user_prompt = user_prompt
+        if retrieved_context and retrieved_context.strip():
+            final_user_prompt = f"Based on the following context:\n{retrieved_context}\n\nUser query: {user_prompt}"
+            print(f"LlamaClient: Using RAG context. Final prompt starts with: '{final_user_prompt[:200]}...'")
+
+        messages.append({"role": "user", "content": final_user_prompt})
 
         try:
             # Generate response using the pipeline.
@@ -140,6 +148,14 @@ if __name__ == '__main__':
         print(f"\nUser Prompt: {prompt_2}")
         response_2 = client.generate_response(prompt_2)
         print(f"\nLlama's Response: {response_2}")
+
+        print("\nSending prompt with RAG context (no history)...")
+        prompt_3 = "How is a fox described here?"
+        rag_context_example = "The fox is a clever animal with a bushy tail. It is often found in forests."
+        print(f"\nUser Prompt: {prompt_3}")
+        print(f"RAG Context: {rag_context_example}")
+        response_3 = client.generate_response(prompt_3, retrieved_context=rag_context_example)
+        print(f"\nLlama's Response (with RAG): {response_3}")
 
     except RuntimeError as e:
         print(f"Runtime Error during example usage: {e}")

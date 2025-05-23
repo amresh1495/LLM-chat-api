@@ -1,0 +1,2 @@
+# This file ensures the 'data' directory is tracked by Git.
+# FAISS index and document chunks will be stored here.
